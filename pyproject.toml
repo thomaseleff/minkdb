@@ -1,0 +1,32 @@
+[project]
+name = "minkdb"
+version = "0.1.0"
+description = "A metadata-link between iTunes and MusicBrainz"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "click>=8.3.1",
+    "musicbrainzngs>=0.7.1",
+    "rich>=14.3.3",
+]
+
+[project.scripts]
+minkdb = "minkdb.cli:main"
+
+[project.optional-dependencies]
+dev = ["ruff>=0.15.4", "ty>=0.0.19"]
+
+[tool.ruff]
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP"]
+ignore = ["UP017"]
+
+[tool.ty]
+
+[tool.uv]
+package = true
+
+[dependency-groups]
+dev = ["pytest>=9.0.2"]

@@ -1,0 +1,308 @@
+"""CLI for Mink-db."""
+
+import json
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+
+import click
+from rich.console import Console
+from rich.panel import Panel
+from rich.progress import BarColumn, Progress, TextColumn
+from rich.table import Table
+
+from minkdb import __version__
+from minkdb.catalog import (
+    find_and_parse_itunes,
+    get_catalog_output,
+    get_unique_albums,
+    load_existing_catalog,
+    parse_tracks,
+)
+from minkdb.database import AlbumEntry, append_to_catalog
+from minkdb.musicbrainz import search_release_group
+
+console = Console(force_terminal=True)
+
+
+def echo_splash() -> None:
+    """Display splash screen with tool info."""
+    title = f"Mink-db v{__version__}"
+    subtitle = "A metadata-link between iTunes & MusicBrainz"
+    experimental = "experimental"
+    hint = "Hint: Use `--rematch` to retry matching unmatched albums."
+
+    note = (
+        "MusicBrainz limits API requests to 1/sec.\n"
+        "Large iTunes libraries may take some time or be rate limited.\n"
+        "Mink-db picks up where it left off, so you may need to run\n"
+        "the tool multiple times to complete the initial metadata-linking."
+    )
+
+    splash = (
+        f"[bold cyan]{title}[/bold cyan] [yellow]{experimental}[/yellow]\n"
+        f"[cyan]{subtitle}[/cyan]\n\n"
+        f"[cyan]{hint}[/cyan]"
+    )
+    console.print(Panel(splash, expand=False, border_style="cyan"), end="")
+    console.print(f"\n[yellow]Note:[/yellow] {note}")
+    console.print()
+
+
+def echo_step(number: int, description: str) -> None:
+    """Display a step header."""
+    console.print(f"[bold green][{number}][/bold green] {description}")
+
+
+def echo_success(message: str) -> None:
+    """Display a success message."""
+    console.print(f"  [green]+[/green] {message}")
+
+
+def echo_table(entries: list) -> None:
+    """Display data as a rich table."""
+    if not entries:
+        return
+
+    table = Table(show_header=True, header_style="bold cyan", box=None)
+
+    table.add_column("Status", justify="center", width=8)
+    table.add_column("Artist", style="white")
+    table.add_column("Album", style="white")
+    table.add_column("MusicBrainz ID", style="dim")
+
+    for e in entries[:50]:
+        status = "[green]Y[/green]" if e.musicbrainz_id else "[red]N[/red]"
+        mbid = e.musicbrainz_id or "-"
+        table.add_row(status, e.artist, e.album, mbid)
+
+    console.print(table)
+
+    if len(entries) > 50:
+        console.print(f"  ... and {len(entries) - 50} more albums")
+
+
+@click.command()
+@click.option(
+    "--path",
+    "-p",
+    "library_path",
+    default=None,
+    help="Path to iTunes library (defaults to current directory)",
+)
+@click.option(
+    "--itunes",
+    "-i",
+    "itunes_filename",
+    default="iTunes Music Library.xml",
+    help="iTunes XML filename to search for",
+)
+@click.option(
+    "--output",
+    "-o",
+    "output_file",
+    default=None,
+    help="Output file path (defaults to stdout)",
+)
+@click.option(
+    "--limit",
+    "-l",
+    "limit",
+    default=None,
+    type=int,
+    help="Limit number of albums to process",
+)
+@click.option(
+    "--rematch",
+    is_flag=True,
+    default=False,
+    help="Retry matching for previously unmatched albums",
+)
+@click.version_option(version=__version__)
+def main(
+    library_path: Path | None,
+    itunes_filename: str,
+    output_file: Path | None,
+    limit: int | None,
+    rematch: bool,
+) -> None:
+    """Mink-db - A metadata-link between iTunes and MusicBrainz."""
+    echo_splash()
+
+    if library_path is None:
+        library_path = Path.cwd()
+    else:
+        library_path = Path(library_path)
+
+    if not library_path.exists():
+        console.print(f"[red]Error:[/red] Path does not exist: {library_path}")
+        sys.exit(1)
+
+    try:
+        # Step 1: Find iTunes XML
+        echo_step(1, "Finding iTunes XML file...")
+        with Progress(
+            TextColumn("[progress.description]{task.description}"),
+            console=console,
+        ) as progress:
+            progress.add_task("Searching", total=None)
+            xml_path = find_and_parse_itunes(library_path, itunes_filename)
+        echo_success(f"Found: {xml_path.name}")
+
+        # Step 2: Parse tracks
+        echo_step(2, "Parsing iTunes library...")
+        with Progress(
+            TextColumn("[progress.description]{task.description}"),
+            console=console,
+        ) as progress:
+            progress.add_task("Parsing", total=None)
+            tracks = parse_tracks(xml_path)
+        echo_success(f"Parsed {len(tracks)} tracks")
+
+        # Step 3: Extract unique albums
+        echo_step(3, "Extracting unique albums...")
+        with Progress(
+            TextColumn("[progress.description]{task.description}"),
+            console=console,
+        ) as progress:
+            progress.add_task("Extracting", total=None)
+            unique_albums = get_unique_albums(tracks)
+        echo_success(f"Found {len(unique_albums)} unique albums")
+
+        # Step 4: Load existing catalog
+        echo_step(4, "Loading existing catalog...")
+        with Progress(
+            TextColumn("[progress.description]{task.description}"),
+            console=console,
+        ) as progress:
+            progress.add_task("Loading", total=None)
+            catalog = load_existing_catalog(library_path)
+
+        if rematch:
+            unmatched = [e for e in catalog if not e.musicbrainz_id]
+            echo_success(f"Found {len(unmatched)} unmatched albums to rematch")
+        else:
+            unmatched = []
+            matched = sum(1 for e in catalog if e.musicbrainz_id)
+            total = len(catalog)
+            ratio = f"{matched}/{total}" if total else "0/0"
+            echo_success(f"Loaded {total} cataloged albums ({ratio} matched)")
+
+        # Step 5: Process albums
+        echo_step(5, "Processing albums...")
+
+        if rematch:
+            albums_to_process = [(e.artist, e.album) for e in unmatched]
+        else:
+            catalog_dict = {(e.artist, e.album): e for e in catalog}
+            albums_to_process = [
+                (a, b) for (a, b) in unique_albums
+                if (a, b) not in catalog_dict
+            ]
+
+        total_albums = len(albums_to_process)
+        if limit:
+            total_albums = min(total_albums, limit)
+
+        entries = list(catalog)
+
+        if total_albums == 0:
+            echo_success("No albums to process")
+        else:
+            with Progress(
+                TextColumn("[progress.description]{task.description}"),
+                BarColumn(),
+                TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
+                console=console,
+            ) as progress:
+                task = progress.add_task("Processing", total=total_albums)
+
+                albums_limited = albums_to_process[:total_albums]
+
+                for artist, album in albums_limited:
+                    existing_entry = next(
+                        (e for e in catalog
+                         if e.artist == artist and e.album == album),
+                        None
+                    )
+
+                    if rematch and existing_entry:
+                        mbid = search_release_group(artist, album)
+                        if mbid:
+                            existing_entry.musicbrainz_id = mbid
+                            existing_entry.matched_at = (
+                                datetime.now().replace(tzinfo=timezone.utc).isoformat()
+                            )
+                            existing_entry.status = "matched"
+                            append_to_catalog(existing_entry, library_path)
+                        entry = existing_entry
+                    else:
+                        mbid = search_release_group(artist, album)
+                        timestamp = (
+                            datetime.now().replace(tzinfo=timezone.utc).isoformat()
+                        )
+                        entry = AlbumEntry(
+                            artist=artist,
+                            album=album,
+                            musicbrainz_id=mbid,
+                            matched_at=timestamp if mbid else None,
+                            status="matched" if mbid else "unmatched",
+                        )
+                        append_to_catalog(entry, library_path)
+                        entries.append(entry)
+
+                    is_matched = entry.musicbrainz_id is not None
+                    status_text = "matched" if is_matched else "unmatched"
+                    if is_matched:
+                        status = f"[green]{status_text}[/green]"
+                    else:
+                        status = f"[red]{status_text}[/red]"
+                    progress.update(
+                        task,
+                        description=f"{artist} - {album} [{status}]",
+                    )
+                    progress.advance(task)
+
+        # Step 6: Generate output
+        echo_step(6, "Generating output...")
+        with Progress(
+            TextColumn("[progress.description]{task.description}"),
+            console=console,
+        ) as progress:
+            progress.add_task("Generating", total=None)
+            output = get_catalog_output(entries)
+        echo_success(f"Generated output for {len(output)} matched albums")
+
+        # Step 7: Display/Write output
+        matched = sum(1 for e in entries if e.musicbrainz_id)
+        unmatched = len(entries) - matched
+
+        console.print()
+        echo_table(entries)
+
+        console.print()
+        console.print(
+            f"Total: {len(entries)} albums | "
+            f"[green]{matched}[/green] matched | "
+            f"[red]{unmatched}[/red] unmatched"
+        )
+
+        output_json = json.dumps(output, indent=2)
+
+        if output_file:
+            output_path = Path(output_file)
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(output_path, "w") as f:
+                f.write(output_json)
+            console.print(f"\n[cyan]Output written to: {output_path}[/cyan]")
+
+    except FileNotFoundError as e:
+        console.print(f"[red]Error:[/red] {e}")
+        sys.exit(1)
+    except Exception as e:
+        console.print(f"[red]Error:[/red] {e}")
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()

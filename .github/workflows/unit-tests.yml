@@ -1,0 +1,29 @@
+name: Unit-Tests
+
+on:
+  push:
+    branches: [ "v[0-9]+.[0-9]+.[0-9]+" ]
+  pull_request:
+    branches: [ "v[0-9]+.[0-9]+.[0-9]+" ]
+  workflow_dispatch:
+
+jobs:
+  build:
+
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Set up Python
+        run: uv python install 3.13
+
+      - name: Test with pytest
+        run: uv run pytest -vvvsx tests/
