@@ -50,6 +50,12 @@ minkdb --path "M:\Music\iTunes" -o ids.json
 
 # Retry matching for previously unmatched albums
 minkdb --path "M:\Music\iTunes" --rematch
+
+# Publish curated exact albums to Lidarr
+LIDARR_API_KEY="<your-api-key>" minkdb publish --path "M:\Music\iTunes"
+
+# Publish to a non-default Lidarr URL
+LIDARR_API_KEY="<your-api-key>" minkdb publish --path "M:\Music\iTunes" --url "http://lidarr.local:8686"
 ```
 
 ## Output Format
@@ -78,6 +84,13 @@ On subsequent runs, Mink-db will skip already-matched albums and only query Musi
 - **Album database**: `<library_path>/.minkdb/album.json`
 - **Artist database**: `<library_path>/.minkdb/artist.json` (unique by artist MusicBrainz ID)
 - **Album FK**: Each album row includes `artist_musicbrainz_id` referencing `artist.json`
+
+## Lidarr Publish
+
+- Uses `lidarr-py` for API integration
+- Reads curated matched album metadata from `.minkdb/album.json`
+- Requires `LIDARR_API_KEY` in environment
+- Adds artists with broad monitoring disabled and monitors only exact albums from Mink-db
 
 ## Requirements
 

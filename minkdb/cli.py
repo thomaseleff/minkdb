@@ -1,6 +1,7 @@
 """CLI for Mink-db."""
 
 import json
+import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -28,6 +29,7 @@ from minkdb.catalog import (
 )
 from minkdb.database import AlbumEntry, append_to_catalog
 from minkdb.musicbrainz import search_release_group_match
+from minkdb.publish import PublishError, publish_to_lidarr
 
 console = Console(force_terminal=True)
 
@@ -89,51 +91,14 @@ def echo_table(entries: list) -> None:
         console.print(f"  ... and {len(entries) - 50} more albums")
 
 
-@click.command()
-@click.option(
-    "--path",
-    "-p",
-    "library_path",
-    default=None,
-    help="Path to iTunes library (defaults to current directory)",
-)
-@click.option(
-    "--itunes",
-    "-i",
-    "itunes_filename",
-    default="iTunes Music Library.xml",
-    help="iTunes XML filename to search for",
-)
-@click.option(
-    "--output",
-    "-o",
-    "output_file",
-    default=None,
-    help="Output file path (defaults to stdout)",
-)
-@click.option(
-    "--limit",
-    "-l",
-    "limit",
-    default=None,
-    type=int,
-    help="Limit number of albums to process",
-)
-@click.option(
-    "--rematch",
-    is_flag=True,
-    default=False,
-    help="Retry matching for previously unmatched albums",
-)
-@click.version_option(version=__version__)
-def main(
+def run_catalog(
     library_path: Path | None,
     itunes_filename: str,
     output_file: Path | None,
     limit: int | None,
     rematch: bool,
 ) -> None:
-    """Mink-db - A metadata-link between iTunes and MusicBrainz."""
+    """Run the cataloging workflow."""
     echo_splash()
 
     if library_path is None:
@@ -321,6 +286,107 @@ def main(
     except Exception as e:
         console.print(f"[red]Error:[/red] {e}")
         sys.exit(1)
+
+
+@click.group(invoke_without_command=True)
+@click.option(
+    "--path",
+    "-p",
+    "library_path",
+    default=None,
+    help="Path to iTunes library (defaults to current directory)",
+)
+@click.option(
+    "--itunes",
+    "-i",
+    "itunes_filename",
+    default="iTunes Music Library.xml",
+    help="iTunes XML filename to search for",
+)
+@click.option(
+    "--output",
+    "-o",
+    "output_file",
+    default=None,
+    help="Output file path (defaults to stdout)",
+)
+@click.option(
+    "--limit",
+    "-l",
+    "limit",
+    default=None,
+    type=int,
+    help="Limit number of albums to process",
+)
+@click.option(
+    "--rematch",
+    is_flag=True,
+    default=False,
+    help="Retry matching for previously unmatched albums",
+)
+@click.version_option(version=__version__)
+@click.pass_context
+def main(
+    ctx: click.Context,
+    library_path: Path | None,
+    itunes_filename: str,
+    output_file: Path | None,
+    limit: int | None,
+    rematch: bool,
+) -> None:
+    """Mink-db - A metadata-link between iTunes and MusicBrainz."""
+    if ctx.invoked_subcommand is not None:
+        return
+    run_catalog(
+        library_path=library_path,
+        itunes_filename=itunes_filename,
+        output_file=output_file,
+        limit=limit,
+        rematch=rematch,
+    )
+
+
+@main.command("publish")
+@click.option(
+    "--path",
+    "-p",
+    "library_path",
+    required=True,
+    type=click.Path(path_type=Path, exists=True, file_okay=False),
+    help="Path to iTunes library containing .minkdb/album.json",
+)
+@click.option(
+    "--url",
+    "lidarr_url",
+    default="http://localhost:8686",
+    show_default=True,
+    help="Lidarr server URL",
+)
+def publish(library_path: Path, lidarr_url: str) -> None:
+    """Publish curated exact albums from Mink-db to Lidarr."""
+    api_key = os.getenv("LIDARR_API_KEY")
+    if not api_key:
+        raise click.ClickException(
+            "LIDARR_API_KEY is not set. Export it and retry this command.",
+        )
+
+    try:
+        summary = publish_to_lidarr(
+            library_path=library_path,
+            lidarr_url=lidarr_url,
+            api_key=api_key,
+        )
+    except PublishError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    console.print("[bold green]Publish complete[/bold green]")
+    console.print(
+        "Published: "
+        f"{summary.total_albums} album targets | "
+        f"{summary.artists_added} artists added | "
+        f"{summary.albums_added} albums added | "
+        f"{summary.albums_already_present} already present",
+    )
 
 
 if __name__ == "__main__":

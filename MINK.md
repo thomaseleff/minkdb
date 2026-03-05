@@ -18,6 +18,7 @@ minkdb/
     ├── __init__.py
     ├── __main__.py
     ├── cli.py          # Click CLI
+    ├── publish.py      # Lidarr publish workflow
     ├── itunes.py       # iTunes XML parser
     ├── musicbrainz.py  # MusicBrainz client
     ├── catalog.py      # Orchestration
@@ -55,7 +56,8 @@ minkdb/
 | 4 | Catalog & Matching | ✅ Complete |
 | 5 | Output & Integration | ✅ Complete |
 | 6 | Fuzzy Matching | ⏳ Deferred |
-| 7 | JSON Database v2 (Breaking) | 🆕 Planned |
+| 7 | JSON Database v2 (Breaking) | ✅ Complete |
+| 8 | Lidarr Publish CLI (Curated Albums) | ✅ Complete |
 
 ### Workstream 7: JSON Database v2 (Breaking)
 
@@ -65,6 +67,17 @@ This workstream intentionally introduces breaking data model changes for the loc
 - Introduce new `artist.json` containing unique artists discovered in the iTunes library, keyed by MusicBrainz artist ID
 - Add `artist_musicbrainz_id` to each album record as a foreign-key reference to `artist.json`
 - Keep this as a proof-of-concept change with no backward compatibility or migration requirement for old files
+
+### Workstream 8: Lidarr Publish CLI (Curated Albums)
+
+Add a new CLI command to publish library metadata from Mink-db storage to Lidarr using `lidarr-py`.
+
+- Add `publish` CLI command that reads Mink-db JSON database from a provided path
+- Add optional `--url` argument for Lidarr server URL
+- Load `LIDARR_API_KEY` from environment
+- If `LIDARR_API_KEY` is missing, exit with a clear user-friendly error message
+- Use `lidarr-py` for API integration
+- Publish curated exact albums only (no artist-level broad monitoring behavior)
 
 ### Future: Fuzzy Matching
 

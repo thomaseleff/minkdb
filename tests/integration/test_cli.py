@@ -5,6 +5,7 @@ import json
 import pytest
 from click.testing import CliRunner
 
+import minkdb.cli as cli_module
 from minkdb.cli import main
 from minkdb.database import (
     AlbumEntry,
@@ -14,6 +15,7 @@ from minkdb.database import (
     load_catalog,
     save_catalog,
 )
+from minkdb.publish import PublishError, PublishSummary
 
 
 @pytest.fixture
@@ -62,6 +64,7 @@ def test_cli_help_shows_options(cli_runner):
     assert "--itunes" in result.output
     assert "--output" in result.output
     assert "--limit" in result.output
+    assert "publish" in result.output
 
 
 def test_cli_path_not_found(cli_runner):
@@ -220,3 +223,70 @@ def test_artist_json_unique_by_musicbrainz_id(temp_library):
     artists = load_artists(temp_library)
     assert len(artists) == 1
     assert artists[0].musicbrainz_id == "11111111-1111-1111-1111-111111111111"
+
+
+def test_publish_requires_lidarr_api_key(cli_runner, temp_library):
+    """User expects a clear error when LIDARR_API_KEY is not set."""
+    result = cli_runner.invoke(
+        main,
+        ["publish", "--path", str(temp_library)],
+    )
+    assert result.exit_code == 1
+    assert "LIDARR_API_KEY is not set" in result.output
+
+
+def test_publish_invokes_lidarr_workflow(cli_runner, monkeypatch, temp_library):
+    """User expects publish command to call the publish workflow."""
+    calls = {}
+
+    def fake_publish_to_lidarr(library_path, lidarr_url, api_key):
+        calls["library_path"] = library_path
+        calls["lidarr_url"] = lidarr_url
+        calls["api_key"] = api_key
+        return PublishSummary(
+            total_albums=2,
+            artists_added=1,
+            albums_added=1,
+            albums_already_present=1,
+        )
+
+    monkeypatch.setenv("LIDARR_API_KEY", "test-key")
+    monkeypatch.setattr(cli_module, "publish_to_lidarr", fake_publish_to_lidarr)
+
+    result = cli_runner.invoke(
+        main,
+        [
+            "publish",
+            "--path",
+            str(temp_library),
+            "--url",
+            "http://lidarr.local:8686",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "Publish complete" in result.output
+    assert "album targets" in result.output
+    assert calls == {
+        "library_path": temp_library,
+        "lidarr_url": "http://lidarr.local:8686",
+        "api_key": "test-key",
+    }
+
+
+def test_publish_shows_publish_error(cli_runner, monkeypatch, temp_library):
+    """User expects user-friendly publish errors to bubble through CLI."""
+
+    def fake_publish_to_lidarr(library_path, lidarr_url, api_key):
+        raise PublishError("No matched albums were found in .minkdb/album.json.")
+
+    monkeypatch.setenv("LIDARR_API_KEY", "test-key")
+    monkeypatch.setattr(cli_module, "publish_to_lidarr", fake_publish_to_lidarr)
+
+    result = cli_runner.invoke(
+        main,
+        ["publish", "--path", str(temp_library)],
+    )
+
+    assert result.exit_code == 1
+    assert "No matched albums were found" in result.output
