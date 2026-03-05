@@ -8,7 +8,14 @@ from pathlib import Path
 import click
 from rich.console import Console
 from rich.panel import Panel
-from rich.progress import BarColumn, Progress, TextColumn
+from rich.progress import (
+    BarColumn,
+    MofNCompleteColumn,
+    Progress,
+    TextColumn,
+    TimeElapsedColumn,
+    TimeRemainingColumn,
+)
 from rich.table import Table
 
 from minkdb import __version__
@@ -20,7 +27,7 @@ from minkdb.catalog import (
     parse_tracks,
 )
 from minkdb.database import AlbumEntry, append_to_catalog
-from minkdb.musicbrainz import search_release_group
+from minkdb.musicbrainz import search_release_group_match
 
 console = Console(force_terminal=True)
 
@@ -212,10 +219,18 @@ def main(
             with Progress(
                 TextColumn("[progress.description]{task.description}"),
                 BarColumn(),
+                MofNCompleteColumn(),
                 TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
+                TimeElapsedColumn(),
+                TimeRemainingColumn(),
+                TextColumn("[dim]{task.fields[current]}[/dim]"),
                 console=console,
             ) as progress:
-                task = progress.add_task("Processing", total=total_albums)
+                task = progress.add_task(
+                    "Processing",
+                    total=total_albums,
+                    current="",
+                )
 
                 albums_limited = albums_to_process[:total_albums]
 
@@ -227,26 +242,30 @@ def main(
                     )
 
                     if rematch and existing_entry:
-                        mbid = search_release_group(artist, album)
-                        if mbid:
-                            existing_entry.musicbrainz_id = mbid
+                        match = search_release_group_match(artist, album)
+                        if match.release_group_id:
+                            existing_entry.musicbrainz_id = match.release_group_id
                             existing_entry.matched_at = (
                                 datetime.now().replace(tzinfo=timezone.utc).isoformat()
                             )
                             existing_entry.status = "matched"
+                            existing_entry.artist_musicbrainz_id = (
+                                match.artist_musicbrainz_id
+                            )
                             append_to_catalog(existing_entry, library_path)
                         entry = existing_entry
                     else:
-                        mbid = search_release_group(artist, album)
+                        match = search_release_group_match(artist, album)
                         timestamp = (
                             datetime.now().replace(tzinfo=timezone.utc).isoformat()
                         )
                         entry = AlbumEntry(
                             artist=artist,
                             album=album,
-                            musicbrainz_id=mbid,
-                            matched_at=timestamp if mbid else None,
-                            status="matched" if mbid else "unmatched",
+                            musicbrainz_id=match.release_group_id,
+                            matched_at=timestamp if match.release_group_id else None,
+                            status="matched" if match.release_group_id else "unmatched",
+                            artist_musicbrainz_id=match.artist_musicbrainz_id,
                         )
                         append_to_catalog(entry, library_path)
                         entries.append(entry)
@@ -259,7 +278,7 @@ def main(
                         status = f"[red]{status_text}[/red]"
                     progress.update(
                         task,
-                        description=f"{artist} - {album} [{status}]",
+                        current=f"{artist} - {album} [{status}]",
                     )
                     progress.advance(task)
 
@@ -271,7 +290,7 @@ def main(
         ) as progress:
             progress.add_task("Generating", total=None)
             output = get_catalog_output(entries)
-        echo_success(f"Generated output for {len(output)} matched albums")
+        echo_success(f"Generated output for {len(output)} unique matched artists")
 
         # Step 7: Display/Write output
         matched = sum(1 for e in entries if e.musicbrainz_id)

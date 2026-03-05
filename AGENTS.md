@@ -81,16 +81,17 @@ uv run python -m minkdb --path "M:\Music\iTunes" --rematch
 
 ### Output
 
-The CLI outputs a JSON array of matched MusicBrainz IDs:
+The CLI outputs a JSON array of unique matched MusicBrainz artist IDs:
 
 ```json
 [
-  {"MusicBrainzId": "41656317-c512-456f-9fe7-1f7fb8482a34"},
-  {"MusicBrainzId": "8ccd44fb-1c4a-4c5f-98b5-cf3b35a2aa5c"}
+  {"MusicBrainzArtistId": "11111111-1111-1111-1111-111111111111"},
+  {"MusicBrainzArtistId": "22222222-2222-2222-2222-222222222222"}
 ]
 ```
 
 ### Data Storage
 
 - **User settings**: `~/.minkdb/settings.json`
-- **Library catalog**: `<library_path>/.minkdb/catalog.json` (append-only)
+- **Album database**: `<library_path>/.minkdb/album.json`
+- **Artist database**: `<library_path>/.minkdb/artist.json` (unique by artist MusicBrainz ID)

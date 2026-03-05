@@ -5,7 +5,7 @@ from pathlib import Path
 
 from minkdb.database import AlbumEntry, append_to_catalog, load_catalog
 from minkdb.itunes import Track, find_itunes_xml, parse_itunes_xml
-from minkdb.musicbrainz import search_release_group
+from minkdb.musicbrainz import search_release_group_match
 
 
 def find_and_parse_itunes(
@@ -63,14 +63,15 @@ def process_albums(
         if (artist, album) in existing:
             entry = existing[(artist, album)]
         else:
-            mbid = search_release_group(artist, album)
+            match = search_release_group_match(artist, album)
             timestamp = datetime.now().replace(tzinfo=timezone.utc).isoformat()
             entry = AlbumEntry(
                 artist=artist,
                 album=album,
-                musicbrainz_id=mbid,
-                matched_at=timestamp if mbid else None,
-                status="matched" if mbid else "unmatched",
+                musicbrainz_id=match.release_group_id,
+                matched_at=timestamp if match.release_group_id else None,
+                status="matched" if match.release_group_id else "unmatched",
+                artist_musicbrainz_id=match.artist_musicbrainz_id,
             )
             append_to_catalog(entry, library_path)
 
@@ -80,9 +81,12 @@ def process_albums(
 
 
 def get_catalog_output(entries: list[AlbumEntry]) -> list[dict]:
-    """Generate the output list of matched MusicBrainz IDs."""
+    """Generate unique MusicBrainz artist ID output records."""
     output = []
+    seen_artist_ids: set[str] = set()
     for entry in entries:
-        if entry.musicbrainz_id:
-            output.append({"MusicBrainzId": entry.musicbrainz_id})
+        artist_id = entry.artist_musicbrainz_id
+        if artist_id and artist_id not in seen_artist_ids:
+            seen_artist_ids.add(artist_id)
+            output.append({"MusicBrainzArtistId": artist_id})
     return output
