@@ -2,14 +2,15 @@
 
 A metadata-link between iTunes and MusicBrainz. A CLI tool that catalogs a music library by scanning iTunes libraries and retrieving MusicBrainz artist IDs.
 
-## How-it-works
+## How It Works
 
-1. **Locates your iTunes Library:** Scans a directory for the `iTunes Music Library.xml` file.
-2. **Parses Tracks:** Reads and indexes individual track metadata from the XML library.
-3. **Aggregates Albums:** Groups tracks into unique album entities based on tags.
-4. **References the Catalog:** Compares found albums against the local `./minkdb` database of existing matches.
-5. **Reconciles (MusicBrainz):** Queries the MusicBrainz API to link local albums to official IDs.
-6. **Generates Output:** Finalizes the metadata-link and updates the local data store.
+1. **Reads iTunes XML**: Parses `iTunes Music Library.xml` for album metadata
+2. **Deduplicates**: Groups tracks by (artist, album) to avoid duplicate queries
+3. **Queries MusicBrainz**: Searches release groups using exact artist + album matching
+4. **Caches Results**: Stores album and artist data in `.minkdb/album.json` and `.minkdb/artist.json`
+5. **Outputs**: Prints matched IDs to stdout or file
+
+On subsequent runs, Mink-db will skip already-matched albums and only query MusicBrainz for new ones.
 
 ## Installation
 
@@ -68,16 +69,6 @@ Mink-db outputs a JSON array of unique matched MusicBrainz artist IDs:
   {"MusicBrainzArtistId": "22222222-2222-2222-2222-222222222222"}
 ]
 ```
-
-## How It Works
-
-1. **Reads iTunes XML**: Parses `iTunes Music Library.xml` for album metadata
-2. **Deduplicates**: Groups tracks by (artist, album) to avoid duplicate queries
-3. **Queries MusicBrainz**: Searches release groups using exact artist + album matching
-4. **Caches Results**: Stores album and artist data in `.minkdb/album.json` and `.minkdb/artist.json`
-5. **Outputs**: Prints matched IDs to stdout or file
-
-On subsequent runs, Mink-db will skip already-matched albums and only query MusicBrainz for new ones.
 
 ## Data Storage
 
