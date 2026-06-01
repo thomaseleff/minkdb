@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -34,11 +35,7 @@ def _to_dict(value: Any) -> dict[str, Any]:
         if isinstance(as_dict, dict):
             return as_dict
     if hasattr(value, "__dict__"):
-        return {
-            key: raw
-            for key, raw in vars(value).items()
-            if not key.startswith("_")
-        }
+        return {key: raw for key, raw in vars(value).items() if not key.startswith("_")}
     return {}
 
 
@@ -87,6 +84,17 @@ def _first_id(values: list[Any]) -> int | None:
     return None
 
 
+def _find_quality_profile(values: list[Any], name: str) -> int | None:
+    """Find a quality profile by name and return its ID."""
+    for value in values:
+        value_dict = _to_dict(value)
+        if value_dict.get("name") == name:
+            value_id = value_dict.get("id")
+            if isinstance(value_id, int):
+                return value_id
+    return None
+
+
 def _first_root_folder(values: list[Any]) -> str | None:
     """Extract the first root folder path from a list of model objects."""
     for value in values:
@@ -112,22 +120,25 @@ def _ensure_artist(
     default_quality_profile_id: int,
     default_metadata_profile_id: int,
     default_root_folder_path: str,
+    monitor_type: str = "exact",
 ) -> tuple[int, bool]:
     """Ensure a Lidarr artist exists and return (artist_id, created)."""
     artist_api = lidarr.ArtistApi(api_client)
     artist_lookup_api = lidarr.ArtistLookupApi(api_client)
 
     existing = artist_api.list_artist(
-        mb_id=_validate_uuid(artist_musicbrainz_id, "artist_musicbrainz_id"),
+        mb_id=artist_musicbrainz_id,
     )
     if existing:
         existing_id = _to_dict(existing[0]).get("id")
         if isinstance(existing_id, int):
             return existing_id, False
 
-    lookup_results = artist_lookup_api.list_artist_lookup(
-        term=f"lidarr:{artist_musicbrainz_id}",
-    )
+    lookup_results = [
+        artist_lookup_api.get_artist_lookup(
+            term=f"lidarr:{artist_musicbrainz_id}",
+        )
+    ]
     if not lookup_results:
         raise PublishError(
             f"Artist lookup failed for {artist_name} ({artist_musicbrainz_id}).",
@@ -145,7 +156,9 @@ def _ensure_artist(
 
     selected.pop("id", None)
     selected["foreign_artist_id"] = artist_musicbrainz_id
-    selected["monitored"] = False
+    if not selected.get("artistName") and not selected.get("name"):
+        selected["artistName"] = artist_name
+    selected["monitored"] = monitor_type in ("all", "exact")
     selected["quality_profile_id"] = selected.get(
         "quality_profile_id",
         default_quality_profile_id,
@@ -162,9 +175,12 @@ def _ensure_artist(
     add_options = selected.get("add_options")
     if not isinstance(add_options, dict):
         add_options = {}
-    add_options["monitor"] = "none"
-    add_options["search_for_missing_albums"] = False
-    add_options["search_for_missing_tracks"] = False
+    if monitor_type == "all":
+        add_options["monitor"] = "all"
+    else:
+        add_options["monitor"] = "none"
+    add_options["search_for_missing_albums"] = monitor_type == "all"
+    add_options["search_for_missing_tracks"] = monitor_type == "all"
     selected["add_options"] = add_options
 
     created = artist_api.create_artist(artist_resource=selected)
@@ -209,9 +225,11 @@ def _ensure_album(
             )
             return False, True
 
-    lookup_results = album_lookup_api.list_album_lookup(
-        term=f"lidarr:{album_musicbrainz_id}",
-    )
+    lookup_results = [
+        album_lookup_api.get_album_lookup(
+            term=f"lidarr:{album_musicbrainz_id}",
+        )
+    ]
     if not lookup_results:
         raise PublishError(
             f"Album lookup failed for {artist_name} - {album_name} "
@@ -230,7 +248,8 @@ def _ensure_album(
 
     selected.pop("id", None)
     selected["foreign_album_id"] = album_musicbrainz_id
-    selected["artist_id"] = artist_id
+    selected["artistId"] = artist_id
+    selected["artist"] = {"id": artist_id}
     selected["monitored"] = True
     selected["quality_profile_id"] = selected.get(
         "quality_profile_id",
@@ -243,7 +262,14 @@ def _ensure_album(
     add_options["search_for_new_album"] = False
     selected["add_options"] = add_options
 
-    album_api.create_album(album_resource=selected)
+    try:
+        album_api.create_album(album_resource=selected)
+    except lidarr.exceptions.BadRequestException as exc:
+        if "already been added" in str(exc):
+            recheck = album_api.list_album(foreign_album_id=album_musicbrainz_id)
+            if recheck:
+                return False, True
+        raise
     return True, False
 
 
@@ -251,6 +277,10 @@ def publish_to_lidarr(
     library_path: Path,
     lidarr_url: str,
     api_key: str,
+    monitor_type: str = "exact",
+    quality_profile: str | None = None,
+    on_artist_added: Callable[[str], None] | None = None,
+    on_album_added: Callable[[str], None] | None = None,
 ) -> PublishSummary:
     """Publish curated matched albums from Mink-db to Lidarr."""
     targets = _catalog_for_publish(library_path)
@@ -273,7 +303,19 @@ def publish_to_lidarr(
         metadata_profile_api = lidarr.MetadataProfileApi(api_client)
         root_folder_api = lidarr.RootFolderApi(api_client)
 
-        quality_profile_id = _first_id(quality_profile_api.list_quality_profile())
+        quality_profiles = quality_profile_api.list_quality_profile()
+        if quality_profile:
+            quality_profile_id = _find_quality_profile(
+                quality_profiles, quality_profile
+            )
+            if quality_profile_id is None:
+                available = [str(_to_dict(p).get("name")) for p in quality_profiles]
+                raise PublishError(
+                    f"Quality profile '{quality_profile}' not found. "
+                    f"Available: {', '.join(available)}"
+                )
+        else:
+            quality_profile_id = _first_id(quality_profiles)
         metadata_profile_id = _first_id(metadata_profile_api.list_metadata_profile())
         root_folder_path = _first_root_folder(root_folder_api.list_root_folder())
 
@@ -298,10 +340,16 @@ def publish_to_lidarr(
                     default_quality_profile_id=quality_profile_id,
                     default_metadata_profile_id=metadata_profile_id,
                     default_root_folder_path=root_folder_path,
+                    monitor_type=monitor_type,
                 )
                 artist_ids[artist_mbid] = artist_id
                 if created:
                     artists_added += 1
+                    if on_artist_added:
+                        on_artist_added(entry.artist)
+
+            if monitor_type == "all":
+                continue
 
             assert entry.musicbrainz_id
             created, already_present = _ensure_album(
@@ -315,6 +363,8 @@ def publish_to_lidarr(
             )
             if created:
                 albums_added += 1
+                if on_album_added:
+                    on_album_added(entry.album)
             if already_present:
                 albums_already_present += 1
 

@@ -34,14 +34,19 @@ from minkdb.publish import PublishError, publish_to_lidarr
 console = Console(force_terminal=True)
 
 
-def echo_splash() -> None:
+def echo_splash(
+    title: str | None = None,
+    subtitle: str | None = None,
+    note: str | None = None,
+    hint: str | None = None,
+) -> None:
     """Display splash screen with tool info."""
-    title = f"Mink-db v{__version__}"
-    subtitle = "A metadata-link between iTunes & MusicBrainz"
+    title = title or f"Mink-db v{__version__}"
+    subtitle = subtitle or "A metadata-link between iTunes & MusicBrainz"
     experimental = "experimental"
-    hint = "Hint: Use `--rematch` to retry matching unmatched albums."
+    hint = hint or "Hint: Use `--rematch` to retry matching unmatched albums."
 
-    note = (
+    note = note or (
         "MusicBrainz limits API requests to 1/sec.\n"
         "Large iTunes libraries may take some time or be rate limited.\n"
         "Mink-db picks up where it left off, so you may need to run\n"
@@ -168,8 +173,7 @@ def run_catalog(
         else:
             catalog_dict = {(e.artist, e.album): e for e in catalog}
             albums_to_process = [
-                (a, b) for (a, b) in unique_albums
-                if (a, b) not in catalog_dict
+                (a, b) for (a, b) in unique_albums if (a, b) not in catalog_dict
             ]
 
         total_albums = len(albums_to_process)
@@ -201,9 +205,8 @@ def run_catalog(
 
                 for artist, album in albums_limited:
                     existing_entry = next(
-                        (e for e in catalog
-                         if e.artist == artist and e.album == album),
-                        None
+                        (e for e in catalog if e.artist == artist and e.album == album),
+                        None,
                     )
 
                     if rematch and existing_entry:
@@ -362,8 +365,34 @@ def main(
     show_default=True,
     help="Lidarr server URL",
 )
-def publish(library_path: Path, lidarr_url: str) -> None:
+@click.option(
+    "--monitor",
+    "monitor_type",
+    type=click.Choice(["all", "exact", "none"]),
+    default="exact",
+    show_default=True,
+    help="Artist monitoring level: all (all albums), exact (only published), none",
+)
+@click.option(
+    "--quality",
+    "quality_profile",
+    default=None,
+    help="Quality profile name to use (default: first profile)",
+)
+def publish(
+    library_path: Path,
+    lidarr_url: str,
+    monitor_type: str,
+    quality_profile: str | None,
+) -> None:
     """Publish curated exact albums from Mink-db to Lidarr."""
+    echo_splash(
+        title="Publish to Lidarr",
+        subtitle="Sync curated exact albums with Lidarr",
+        note=f"Mode: {monitor_type}",
+        hint="Hint: Use `--quality` to specify a quality profile",
+    )
+
     api_key = os.getenv("LIDARR_API_KEY")
     if not api_key:
         raise click.ClickException(
@@ -371,11 +400,53 @@ def publish(library_path: Path, lidarr_url: str) -> None:
         )
 
     try:
-        summary = publish_to_lidarr(
-            library_path=library_path,
-            lidarr_url=lidarr_url,
-            api_key=api_key,
+        from minkdb.publish import _catalog_for_publish
+
+        targets = _catalog_for_publish(library_path)
+        if not targets:
+            raise click.ClickException(
+                "No matched albums were found in .minkdb/album.json to publish.",
+            )
+
+        unique_artists = {
+            e.artist_musicbrainz_id for e in targets if e.artist_musicbrainz_id
+        }
+        total_items = len(unique_artists) + (
+            0 if monitor_type == "all" else len(targets)
         )
+
+        with Progress(
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            MofNCompleteColumn(),
+            TimeElapsedColumn(),
+            TimeRemainingColumn(),
+            console=console,
+        ) as progress:
+            task = progress.add_task(
+                f"Publishing to Lidarr ({monitor_type} mode)",
+                total=total_items,
+            )
+
+            def on_artist_added(artist_name: str) -> None:
+                progress.update(
+                    task, advance=1, description=f"Added artist: {artist_name}"
+                )
+
+            def on_album_added(album_name: str) -> None:
+                progress.update(
+                    task, advance=1, description=f"Added album: {album_name}"
+                )
+
+            summary = publish_to_lidarr(
+                library_path=library_path,
+                lidarr_url=lidarr_url,
+                api_key=api_key,
+                monitor_type=monitor_type,
+                quality_profile=quality_profile,
+                on_artist_added=on_artist_added,
+                on_album_added=on_album_added,
+            )
     except PublishError as exc:
         raise click.ClickException(str(exc)) from exc
 
