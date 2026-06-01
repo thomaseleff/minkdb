@@ -1,15 +1,16 @@
 # Mink-db
 
-A metadata-link between iTunes and MusicBrainz. A CLI tool that catalogs a music library by scanning iTunes libraries and retrieving MusicBrainz Release Group IDs.
+A metadata-link between iTunes and MusicBrainz. A CLI tool that catalogs a music library by scanning iTunes libraries and retrieving MusicBrainz artist IDs.
 
-## How-it-works
+## How It Works
 
-1. **Locates your iTunes Library:** Scans a directory for the `iTunes Music Library.xml` file.
-2. **Parses Tracks:** Reads and indexes individual track metadata from the XML library.
-3. **Aggregates Albums:** Groups tracks into unique album entities based on tags.
-4. **References the Catalog:** Compares found albums against the local `./minkdb` database of existing matches.
-5. **Reconciles (MusicBrainz):** Queries the MusicBrainz API to link local albums to official IDs.
-6. **Generates Output:** Finalizes the metadata-link and updates the local data store.
+1. **Reads iTunes XML**: Parses `iTunes Music Library.xml` for album metadata
+2. **Deduplicates**: Groups tracks by (artist, album) to avoid duplicate queries
+3. **Queries MusicBrainz**: Searches release groups using exact artist + album matching
+4. **Caches Results**: Stores album and artist data in `.minkdb/album.json` and `.minkdb/artist.json`
+5. **Outputs**: Prints matched IDs to stdout or file
+
+On subsequent runs, Mink-db will skip already-matched albums and only query MusicBrainz for new ones.
 
 ## Installation
 
@@ -50,33 +51,37 @@ minkdb --path "M:\Music\iTunes" -o ids.json
 
 # Retry matching for previously unmatched albums
 minkdb --path "M:\Music\iTunes" --rematch
+
+# Publish curated exact albums to Lidarr
+LIDARR_API_KEY="<your-api-key>" minkdb publish --path "M:\Music\iTunes"
+
+# Publish to a non-default Lidarr URL
+LIDARR_API_KEY="<your-api-key>" minkdb publish --path "M:\Music\iTunes" --url "http://lidarr.local:8686"
 ```
 
 ## Output Format
 
-Mink-db outputs a JSON array of matched MusicBrainz IDs:
+Mink-db outputs a JSON array of unique matched MusicBrainz artist IDs:
 
 ```json
 [
-  {"MusicBrainzId": "41656317-c512-456f-9fe7-1f7fb8482a34"},
-  {"MusicBrainzId": "8ccd44fb-1c4a-4c5f-98b5-cf3b35a2aa5c"}
+  {"MusicBrainzArtistId": "11111111-1111-1111-1111-111111111111"},
+  {"MusicBrainzArtistId": "22222222-2222-2222-2222-222222222222"}
 ]
 ```
 
-## How It Works
-
-1. **Reads iTunes XML**: Parses `iTunes Music Library.xml` for album metadata
-2. **Deduplicates**: Groups tracks by (artist, album) to avoid duplicate queries
-3. **Queries MusicBrainz**: Searches for Release Group IDs using exact artist + album matching
-4. **Caches Results**: Stores results in `.minkdb/catalog.json` (append-only)
-5. **Outputs**: Prints matched IDs to stdout or file
-
-On subsequent runs, Mink-db will skip already-matched albums and only query MusicBrainz for new ones.
-
 ## Data Storage
 
-- **Catalog database**: `<library_path>/.minkdb/catalog.json`
-- **Append-only**: Previous entries are preserved and updated
+- **Album database**: `<library_path>/.minkdb/album.json`
+- **Artist database**: `<library_path>/.minkdb/artist.json` (unique by artist MusicBrainz ID)
+- **Album FK**: Each album row includes `artist_musicbrainz_id` referencing `artist.json`
+
+## Lidarr Publish
+
+- Uses `lidarr-py` for API integration
+- Reads curated matched album metadata from `.minkdb/album.json`
+- Requires `LIDARR_API_KEY` in environment
+- Adds artists with broad monitoring disabled and monitors only exact albums from Mink-db
 
 ## Requirements
 
